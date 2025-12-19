@@ -1,0 +1,861 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mathematical Morphology - 3D Particle Morphing</title>
+    
+    <!-- Load Tailwind CSS for simple UI styling --><script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght400;600;800&display=swap" rel="stylesheet">
+    
+    <!-- MediaPipe Hands & Camera Utility for Hand Tracking --><script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <!-- NEW: MediaPipe Drawing Utility for Visualization -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    
+    <style>
+        /* Custom styles for the full-screen, dark background */
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000000;
+            font-family: 'Inter', sans-serif;
+            color: #ffffff;
+        }
+        canvas {
+            display: block;
+        }
+        #info {
+            position: absolute;
+            top: 0;
+            left: 0;
+            padding: 1rem;
+            width: 100%;
+            z-index: 10;
+            text-shadow: 0 0 5px rgba(0, 0, 0, 0.5);
+            text-align: left; 
+            pointer-events: none; /* Allow interaction with canvas beneath info box */
+        }
+        #info > * {
+            pointer-events: auto; /* Re-enable pointer events for controls inside info box */
+        }
+        .text-cyan-glow {
+            text-shadow: 0 0 8px #00ffff, 0 0 15px #0066ff;
+        }
+        /* Hidden video element for MediaPipe processing */
+        #video-feed {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 1px;
+            height: 1px;
+            visibility: hidden;
+        }
+
+        /* 摄像头显示框样式 - 调整为更小尺寸 (160x120) */
+        #webcam-display {
+            position: absolute;
+            bottom: 1rem;
+            right: 1rem;
+            width: 160px; /* 调整为更小尺寸 */
+            height: 120px; /* 4:3 比例 */
+            background: rgba(0, 0, 0, 0.5);
+            border: 2px solid rgba(0, 255, 255, 0.5);
+            border-radius: 8px;
+            overflow: hidden;
+            z-index: 10;
+            box-shadow: 0 0 10px rgba(0, 255, 255, 0.3);
+            display: none; /* 默认隐藏，在摄像头启动后显示 */
+            /* 确保内部元素可以绝对定位 */
+            position: absolute;
+        }
+        #webcam-display.active {
+            display: block;
+        }
+        #webcam-display video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover; /* 确保视频填满容器 */
+            transform: scaleX(-1); /* 镜像翻转，让用户感觉是照镜子 */
+        }
+        /* 确保骨骼追踪Canvas完全覆盖视频 */
+        #webcam-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            /* 移除CSS镜像翻转，仅在JS中控制，以确保与MediaPipe坐标对齐 */
+        }
+        /* 确保按钮可以被点击 */
+        #fullscreen-button {
+            pointer-events: auto;
+        }
+    </style>
+    <!-- Three.js Import Map --><script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+    <!-- Hidden video feed for MediaPipe processing -->
+    <video id="video-feed" autoplay muted playsinline></video>
+
+    <!-- 摄像头显示框 (右下角) -->
+    <div id="webcam-display" class="relative">
+        <video id="webcam-preview" autoplay muted playsinline></video>
+        <!-- NEW: 骨骼追踪视觉叠加层 -->
+        <canvas id="webcam-canvas"></canvas>
+    </div>
+
+    <div id="info">
+        <h1 class="text-3xl font-extrabold text-cyan-glow tracking-widest">THE UNIVERSE OF ONE</h1>
+        
+        <!-- 启动提示和控制说明 - V字手势 -->
+        <p class="mt-1 text-lg font-medium uppercase">CLICK / TAP TO START. CONTROLS: CLICK, "NEXT", OR LEFT SWIPE/OPEN HAND.</p>
+        
+        <!-- 麦克风状态显示 -->
+        <div id="mic-status" class="mt-4 p-2 bg-gray-900 bg-opacity-70 rounded-full text-sm inline-flex items-center shadow-xl">
+            <span id="mic-icon" class="w-3 h-3 rounded-full bg-yellow-500 mr-2"></span>
+            <span id="mic-text">WAITING FOR INTERACTION...</span>
+        </div>
+
+        <div id="current-state" class="mt-4 p-2 bg-black bg-opacity-50 rounded-lg shadow-xl inline-block uppercase">
+            CURRENT TARGET: <span class="font-bold text-cyan-500 text-cyan-glow">SATURN</span>
+        </div>
+        
+        <!-- 全屏按钮 -->
+        <button id="fullscreen-button" class="absolute top-4 right-4 p-3 rounded-full bg-cyan-700 hover:bg-cyan-500 transition duration-300 shadow-lg">
+            <!-- SVG Icon for Fullscreen (Maximize) -->
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-white">
+                <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path>
+            </svg>
+        </button>
+    </div>
+    
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+        
+        // Use global variables provided by MediaPipe scripts
+        const Hands = window.Hands;
+        const Camera = window.Camera;
+        // The drawing utilities are now available globally after importing drawing_utils.js
+
+        // --- Global Variables ---
+        let camera, scene, renderer, controls, clock;
+        let composer, bloomPass;
+        let particles, positions, colors; 
+        let stars;
+
+        // --- Gesture/Voice Variables ---
+        let recognition;
+        let isListening = false;
+        let video, hands;
+        let webcamPreview; 
+        let canvasElement, canvasCtx; 
+        let targetZoomZ = 10; 
+        let gestureDetected = false; 
+        
+        // NEW SWIPE VARIABLES
+        let lastHandX = null;
+        let swipeTimeout = null;
+        const SWIPE_THRESHOLD_X = 0.15; // 15% 屏幕宽度内的快速移动
+        const SWIPE_DURATION_MS = 300; // 300毫秒内完成
+
+        // --- Particle System Constants ---
+        const PARTICLE_COUNT = 60000;
+        const SPHERE_PARTICLES = Math.floor(PARTICLE_COUNT * 0.75); 
+
+        const PARTICLE_BASE_SIZE = 0.07;
+        const MORPH_DURATION = 2.0;
+        const EXPLOSION_DURATION = 2.0; 
+        const EXPLOSION_RADIUS = 30; 
+        const COLOR_START = new THREE.Color(0x0066ff);
+        const COLOR_END = new THREE.Color(0x00ffff);
+        
+        // ROTATION CONSTANTS
+        const BASE_ROTATION_Y = 0.0010; 
+        const BASE_ROTATION_X = 0.0004; 
+        const MIN_CAMERA_Z = 5;
+        const MAX_CAMERA_Z = 25;
+
+        // --- Morphing State Variables ---
+        let targetPositions = [];
+        let currentState = 0;
+        let targetState = 1;
+        let morphStartTime = 0;
+        let isMorphing = false;
+        const geometryNames = ['SATURN', 'TORUS', 'ICOSAHEDRON', 'UNIVERSE BOOM']; 
+        const infoElement = document.getElementById('current-state').querySelector('span');
+
+        /**
+         * Creates a circular texture with a radial gradient for points.
+         */
+        function createGradientCircleTexture() {
+            const size = 128;
+            const canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            const context = canvas.getContext('2d');
+
+            const centerX = size / 2;
+            const centerY = size / 2;
+            const radius = size / 2;
+
+            const gradient = context.createRadialGradient(centerX, centerY, 0, centerX, centerY, radius);
+            gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+            gradient.addColorStop(0.5, 'rgba(255, 255, 255, 0.7)');
+            gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+
+            context.fillStyle = gradient;
+            context.fillRect(0, 0, size, size);
+
+            return new THREE.CanvasTexture(canvas);
+        }
+
+        // --- Utility Functions for Geometry Generation (omitted for brevity) ---
+        // (Existing functions: createSaturnPositions, createTorusPositions, createIcosahedronPositions, createExplosionPositions)
+
+        function createSaturnPositions() {
+            const totalParticles = PARTICLE_COUNT;
+            const sphereParticles = SPHERE_PARTICLES; 
+            const ringParticles = totalParticles - sphereParticles; 
+
+            const sphereRadius = 2.5;
+            const ringInnerRadius = 3.5;
+            const ringOuterRadius = 5.0;
+            const ringThickness = 0.05;
+
+            const tempPositions = [];
+
+            // Sphere generation (Planet body)
+            for (let i = 0; i < sphereParticles; i++) {
+                const u = Math.random() * Math.PI * 2;
+                const v = Math.acos(Math.random() * 2 - 1);
+                const x = sphereRadius * Math.sin(v) * Math.cos(u);
+                const y = sphereRadius * Math.sin(v) * Math.sin(u);
+                const z = sphereRadius * Math.cos(v);
+                tempPositions.push(x, y, z);
+            }
+
+            // Ring generation (Flat disk)
+            for (let i = 0; i < ringParticles; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const r = Math.sqrt(Math.random() * (ringOuterRadius * ringOuterRadius - ringInnerRadius * ringInnerRadius) + ringInnerRadius * ringInnerRadius);
+                const x = r * Math.cos(angle);
+                const y = r * Math.sin(angle);
+                const z = (Math.random() - 0.5) * ringThickness; 
+                tempPositions.push(x, y, z);
+            }
+
+            return new Float32Array(tempPositions);
+        }
+
+        function createTorusPositions(majorRadius, tubeRadius) {
+            const tempPositions = [];
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                const u = Math.random() * Math.PI * 2;
+                const v = Math.random() * Math.PI * 2;
+                const x = (majorRadius + tubeRadius * Math.cos(v)) * Math.cos(u);
+                const y = (majorRadius + tubeRadius * Math.cos(v)) * Math.sin(u);
+                const z = tubeRadius * Math.sin(v);
+                tempPositions.push(x, y, z);
+            }
+            return new Float32Array(tempPositions);
+        }
+
+        function createIcosahedronPositions(radius) {
+            const icosahedron = new THREE.IcosahedronGeometry(radius, 1);
+            const vertices = icosahedron.attributes.position.array;
+            const tempPositions = [];
+
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                const v1Index = Math.floor(Math.random() * (vertices.length / 3)) * 3;
+                const v2Index = Math.floor(Math.random() * (vertices.length / 3)) * 3;
+                const lerpFactor = Math.random();
+
+                const x = vertices[v1Index] + (vertices[v2Index] - vertices[v1Index]) * lerpFactor;
+                const y = vertices[v1Index + 1] + (vertices[v2Index + 1] - vertices[v1Index + 1]) * lerpFactor;
+                const z = vertices[v1Index + 2] + (vertices[v2Index + 2] - vertices[v1Index + 2]) * lerpFactor;
+
+                tempPositions.push(
+                    x + (Math.random() - 0.5) * 0.1,
+                    y + (Math.random() - 0.5) * 0.1,
+                    z + (Math.random() - 0.5) * 0.1
+                );
+            }
+            return new Float32Array(tempPositions);
+        }
+
+        function createExplosionPositions() {
+            const tempPositions = new Float32Array(PARTICLE_COUNT * 3);
+            const currentGeometryPositions = particles.geometry.attributes.position.array;
+
+            // Calculate center of current geometry (for explosion origin)
+            let centerX = 0, centerY = 0, centerZ = 0;
+            for (let i = 0; i < PARTICLE_COUNT * 3; i += 3) {
+                centerX += currentGeometryPositions[i];
+                centerY += currentGeometryPositions[i+1];
+                centerZ += currentGeometryPositions[i+2];
+            }
+            centerX /= PARTICLE_COUNT;
+            centerY /= PARTICLE_COUNT;
+            centerZ /= PARTICLE_COUNT;
+
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                const baseIndex = i * 3;
+
+                // Direction vector from center to particle
+                const dirX = currentGeometryPositions[baseIndex] - centerX;
+                const dirY = currentGeometryPositions[baseIndex+1] - centerY;
+                const dirZ = currentGeometryPositions[baseIndex+2] - centerZ;
+
+                // Normalize direction and scale by random factor for explosion effect
+                const length = Math.sqrt(dirX*dirX + dirY*dirY + dirZ*dirZ);
+                const normalizedDirX = length === 0 ? (Math.random() - 0.5) * 2 : dirX / length;
+                const normalizedDirY = length === 0 ? (Math.random() - 0.5) * 2 : dirY / length;
+                const normalizedDirZ = length === 0 ? (Math.random() - 0.5) * 2 : dirZ / length;
+
+                // Explode outwards, add random offset for 'debris' feel
+                const spreadFactor = Math.random() * EXPLOSION_RADIUS;
+                tempPositions[baseIndex] = normalizedDirX * spreadFactor + (Math.random() - 0.5) * 5;
+                tempPositions[baseIndex + 1] = normalizedDirY * spreadFactor + (Math.random() - 0.5) * 5;
+                tempPositions[baseIndex + 2] = normalizedDirZ * spreadFactor + (Math.random() - 0.5) * 5;
+            }
+            return new Float32Array(tempPositions);
+        }
+
+        /**
+         * Creates a static particle system far in the background to serve as a star field.
+         */
+        function createStarfield() {
+            const starCount = 10000;
+            const starPositions = new Float32Array(starCount * 3);
+            const starColors = new Float32Array(starCount * 3);
+            const maxRange = 100;
+
+            for (let i = 0; i < starCount; i++) {
+                const x = (Math.random() - 0.5) * 2 * maxRange;
+                const y = (Math.random() - 0.5) * 2 * maxRange;
+                const z = (Math.random() - 0.5) * 2 * maxRange;
+
+                starPositions[i * 3] = x;
+                starPositions[i * 3 + 1] = y;
+                starPositions[i * 3 + 2] = z;
+
+                const brightness = 0.1 + Math.random() * 0.9; 
+                const color = new THREE.Color();
+                color.setScalar(brightness); 
+                starColors[i * 3] = color.r;
+                starColors[i * 3 + 1] = color.g;
+                starColors[i * 3 + 2] = color.b;
+            }
+
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+            geometry.setAttribute('color', new THREE.BufferAttribute(starColors, 3));
+
+            const starTexture = createGradientCircleTexture(); 
+
+            const material = new THREE.PointsMaterial({
+                size: 0.2, 
+                vertexColors: true,
+                sizeAttenuation: true,
+                depthWrite: false,
+                blending: THREE.AdditiveBlending,
+                map: starTexture,
+            });
+
+            stars = new THREE.Points(geometry, material);
+            scene.add(stars);
+        }
+        
+        /**
+         * Toggles the document into or out of fullscreen mode.
+         */
+        function toggleFullscreen() {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen().catch(err => {
+                    console.error(`Error attempting to enable full-screen mode: ${err.message} (${err.name})`);
+                });
+            } else {
+                document.exitFullscreen();
+            }
+        }
+
+        // --- Voice Command Functions ---
+
+        function initVoiceCommand() {
+            // Check for browser compatibility (using webkit prefix for broader compatibility)
+            if ('webkitSpeechRecognition' in window) {
+                recognition = new webkitSpeechRecognition();
+                recognition.continuous = false; // Stop after a single command
+                recognition.interimResults = false; // Only final results
+                recognition.lang = 'en-US'; // English
+                
+                const micIcon = document.getElementById('mic-icon');
+                const micText = document.getElementById('mic-text');
+                
+                micText.textContent = 'VOICE COMMAND READY';
+                micIcon.classList.remove('bg-yellow-500');
+                micIcon.classList.add('bg-red-500');
+                
+                // --- Event Handlers ---
+                
+                recognition.onstart = () => {
+                    isListening = true;
+                    micIcon.classList.remove('bg-red-500');
+                    micIcon.classList.add('bg-green-500', 'animate-pulse');
+                    micText.textContent = 'LISTENING... (SAY "NEXT")'; 
+                };
+
+                recognition.onend = () => {
+                    isListening = false;
+                    micIcon.classList.remove('bg-green-500', 'animate-pulse');
+                    micIcon.classList.add('bg-red-500');
+                    micText.textContent = 'VOICE COMMAND READY';
+                    
+                    // Auto-restart listening
+                    setTimeout(startRecognition, 500); 
+                };
+
+                recognition.onresult = (event) => {
+                    const result = event.results[0][0].transcript;
+                    console.log('Voice Command received:', result);
+
+                    if (result.toLowerCase().includes('next')) { 
+                        if (!isMorphing) {
+                            startMorphTransition();
+                            micText.textContent = `COMMAND: "${result.toUpperCase()}" - MORPHING!`;
+                        }
+                    } else {
+                         micText.textContent = `HEARD: "${result.toUpperCase()}". SAY "NEXT".`; 
+                    }
+                };
+
+                recognition.onerror = (event) => {
+                    console.error('Speech recognition error:', event.error);
+                    if (event.error !== 'no-speech') {
+                         micText.textContent = `ERROR: ${event.error.toUpperCase()}`;
+                    }
+                };
+
+            } else {
+                const micStatusDiv = document.getElementById('mic-status');
+                micStatusDiv.innerHTML = '<span class="text-yellow-500 font-bold">⚠️ VOICE COMMAND NOT SUPPORTED.</span>';
+                console.warn('Web Speech API (webkitSpeechRecognition) not supported.');
+            }
+        }
+
+        function startRecognition() {
+            if (recognition && !isListening) {
+                try {
+                    recognition.start();
+                } catch (e) {
+                    console.warn('Recognition start failed, possibly already starting:', e);
+                }
+            }
+        }
+
+        // --- Hand Tracking Functions ---
+
+        function setupMediaPipe() {
+            video = document.getElementById('video-feed');
+            webcamPreview = document.getElementById('webcam-preview'); // Get the visible video element
+            
+            // NEW: Initialize Canvas for Drawing
+            canvasElement = document.getElementById('webcam-canvas');
+            canvasCtx = canvasElement.getContext('2d');
+            // Set canvas dimensions to match the preview container (160x120)
+            canvasElement.width = 160;
+            canvasElement.height = 120;
+            
+            hands = new Hands({
+                locateFile: (file) => {
+                    return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+                }
+            });
+
+            hands.setOptions({
+                maxNumHands: 1,
+                modelComplexity: 1,
+                minDetectionConfidence: 0.7,
+                minTrackingConfidence: 0.7
+            });
+            hands.onResults(onResults);
+            
+            document.getElementById('mic-text').textContent = 'GESTURE & VOICE READY. POINT CAMERA AT HAND.';
+        }
+        
+        function startHandTracking() {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                console.error('Browser does not support camera access.');
+                document.getElementById('mic-text').textContent = 'ERROR: CAMERA NOT SUPPORTED.';
+                return;
+            }
+
+             navigator.mediaDevices.getUserMedia({ video: true })
+                .then((stream) => {
+                    // Assign stream to both hidden processing video and visible preview
+                    video.srcObject = stream;
+                    webcamPreview.srcObject = stream; 
+                    
+                    const cameraMP = new Camera(video, {
+                        onFrame: async () => {
+                            await hands.send({ image: video });
+                        },
+                        width: 640,
+                        height: 480 // MediaPipe prefers 4:3 input ratio
+                    });
+                    
+                    cameraMP.start();
+                    document.getElementById('webcam-display').classList.add('active'); // Show the preview container
+                })
+                .catch((err) => {
+                    console.error('Error accessing camera:', err);
+                    document.getElementById('mic-text').textContent = 'ERROR: CAMERA ACCESS DENIED.';
+                });
+        }
+
+        /**
+         * Helper function to calculate 3D distance between two landmarks (normalized 0 to 1).
+         */
+        function distance3D(p1, p2) {
+            return Math.sqrt(
+                (p1.x - p2.x) ** 2 +
+                (p1.y - p2.y) ** 2 +
+                (p1.z - p2.z) ** 2
+            );
+        }
+
+        /**
+         * Processes hand tracking results for zoom, V-sign gestures, and visualization.
+         */
+        function onResults(results) {
+            
+            // 1. Drawing Logic - Always clear the canvas first
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                
+                // --- VISUALIZATION: Draw Hand Skeleton on Canvas ---
+                // 使用 JS 转换来镜像翻转绘制，与 CSS 翻转的视频匹配，同时解决用户提出的校准问题
+                canvasCtx.translate(canvasElement.width, 0);
+                canvasCtx.scale(-1, 1);
+                
+                // Draw the skeleton connections (green lines)
+                window.drawConnectors(canvasCtx, landmarks, window.HAND_CONNECTIONS, { color: '#00FF00', lineWidth: 2 });
+                // Draw the landmarks (red dots)
+                window.drawLandmarks(canvasCtx, landmarks, { color: '#FF0000', lineWidth: 1, radius: 3 });
+
+                // Restore the canvas context
+                canvasCtx.restore();
+
+                // 2. GESTURE DETECTION: ZOOM (Open Hand/Closed Fist)
+                const palmBase = landmarks[0];
+                const indexTip = landmarks[8];
+                const pinkyTip = landmarks[20];
+                const middleTip = landmarks[12];
+                const ringTip = landmarks[16];
+                const thumbTip = landmarks[4];
+
+                // 使用指尖到掌根的平均距离作为“握拳”的判断依据
+                const fingerDistances = [
+                    distance3D(indexTip, palmBase),
+                    distance3D(middleTip, palmBase),
+                    distance3D(ringTip, palmBase),
+                    distance3D(pinkyTip, palmBase)
+                ];
+                
+                // 计算指尖到掌根的平均距离
+                const avgFingerDistance = fingerDistances.reduce((a, b) => a + b, 0) / fingerDistances.length;
+                
+                // 拇指和食指尖的距离 (Pinch distance)
+                const pinchDistance = distance3D(thumbTip, indexTip);
+
+                // 判断是否是握拳 (所有手指距离较近)
+                const IS_FIST = avgFingerDistance < 0.20; 
+                // 判断是否是张开手掌 (所有手指距离较远)
+                const IS_OPEN = avgFingerDistance > 0.35 && pinchDistance > 0.10; 
+                
+                // 根据手势设置缩放目标
+                if (IS_OPEN) {
+                    // 张开手掌: 放大 (靠近 MIN_CAMERA_Z)
+                    targetZoomZ = THREE.MathUtils.lerp(targetZoomZ, MIN_CAMERA_Z, 0.05);
+                    document.getElementById('mic-text').textContent = 'GESTURE: OPEN HAND - ZOOMING IN (放大)!';
+                } else if (IS_FIST) {
+                    // 握拳: 缩小 (远离 MAX_CAMERA_Z)
+                    targetZoomZ = THREE.MathUtils.lerp(targetZoomZ, MAX_CAMERA_Z, 0.05);
+                    document.getElementById('mic-text').textContent = 'GESTURE: CLOSED FIST - ZOOMING OUT (缩小)!';
+                } else {
+                    // 保持原样或恢复到中立位置
+                    targetZoomZ = THREE.MathUtils.lerp(targetZoomZ, 15, 0.01); // 恢复到中间值
+                    if(document.getElementById('mic-text').textContent.includes('ZOOMING')) {
+                         document.getElementById('mic-text').textContent = 'GESTURE & VOICE READY. POINT CAMERA AT HAND.';
+                    }
+                }
+                
+                // 3. GESTURE DETECTION: LEFT SWIPE (Morph Transition)
+                const currentHandX = palmBase.x;
+
+                if (!isMorphing && !gestureDetected) {
+                    const currentTime = Date.now();
+
+                    if (lastHandX === null) {
+                        // 初始化追踪或重置追踪
+                        lastHandX = currentHandX;
+                        if (swipeTimeout) clearTimeout(swipeTimeout);
+                        swipeTimeout = setTimeout(() => {
+                            lastHandX = null; // 超过时间未完成滑动，重置
+                        }, SWIPE_DURATION_MS);
+
+                    } else {
+                        const deltaX = currentHandX - lastHandX;
+                        
+                        // 检查是否为向左滑动 (normalized x 值变小)
+                        if (deltaX < -SWIPE_THRESHOLD_X) {
+                            gestureDetected = true; // 启用节流
+                            
+                            if (swipeTimeout) clearTimeout(swipeTimeout);
+                            lastHandX = null; // 重置追踪
+                            
+                            // 触发模式切换
+                            startMorphTransition();
+                            document.getElementById('mic-text').textContent = 'GESTURE: LEFT SWIPE DETECTED - MORPHING!';
+                            
+                            // 1.5秒后解除节流
+                            setTimeout(() => gestureDetected = false, 1500); 
+
+                        } else if (Math.abs(deltaX) > SWIPE_THRESHOLD_X / 3) {
+                            // 如果有中等程度的移动，更新追踪点，以便只检测快速滑动手势
+                            lastHandX = currentHandX;
+                            if (swipeTimeout) clearTimeout(swipeTimeout);
+                            swipeTimeout = setTimeout(() => {
+                                lastHandX = null;
+                            }, SWIPE_DURATION_MS);
+                        }
+                    }
+                }
+            } else {
+                 // No hand detected, clear tracking state
+                 lastHandX = null;
+                 if (swipeTimeout) clearTimeout(swipeTimeout);
+                 swipeTimeout = null;
+
+                 // Restore canvas context in case save was called
+                 canvasCtx.restore(); 
+            }
+        }
+
+
+        // --- Core Functions (omitted for brevity) ---
+        // (Existing functions: init, startUserInteraction, onWindowResize, startMorphTransition, animate)
+        
+        function init() {
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            document.body.appendChild(renderer.domElement);
+
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x000000);
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = targetZoomZ;
+            clock = new THREE.Clock();
+
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.screenSpacePanning = false;
+            controls.minDistance = MIN_CAMERA_Z;
+            controls.maxDistance = MAX_CAMERA_Z;
+            controls.enableZoom = false; // Disable mouse zoom to use hand gesture for zoom instead
+
+            // Initialize all target positions
+            targetPositions.push(
+                createSaturnPositions(),
+                createTorusPositions(4.5, 1.5),
+                createIcosahedronPositions(5.0)
+            );
+
+            positions = targetPositions[0].slice();
+            colors = new Float32Array(PARTICLE_COUNT * 3);
+
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                const color = new THREE.Color();
+                color.lerpColors(COLOR_START, COLOR_END, i / PARTICLE_COUNT);
+                colors[i * 3] = color.r;
+                colors[i * 3 + 1] = color.g;
+                colors[i * 3 + 2] = color.b;
+            }
+
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+            const particleTexture = createGradientCircleTexture();
+
+            const material = new THREE.PointsMaterial({
+                vertexColors: true,
+                transparent: true,
+                opacity: 0.9,
+                blending: THREE.AdditiveBlending,
+                sizeAttenuation: true,
+                depthWrite: false,
+                map: particleTexture,
+            });
+
+            material.size = PARTICLE_BASE_SIZE;
+
+            particles = new THREE.Points(geometry, material);
+            scene.add(particles);
+
+            composer = new EffectComposer(renderer);
+            composer.addPass(new RenderPass(scene, camera));
+
+            bloomPass = new UnrealBloomPass(
+                new THREE.Vector2(window.innerWidth, window.innerHeight),
+                0.45, // Strength
+                0.2, // Radius
+                0.85 // Threshold
+            );
+            composer.addPass(bloomPass);
+
+            createStarfield();
+
+            window.addEventListener('resize', onWindowResize);
+            
+            // 第一次点击：启动摄像头和语音识别服务（这是浏览器安全策略要求的最小交互）
+            // 确保只监听一次，因为一旦启动，后续点击用于形态切换
+            window.addEventListener('click', startUserInteraction, { once: true }); 
+            
+            // 绑定全屏按钮事件
+            document.getElementById('fullscreen-button').addEventListener('click', toggleFullscreen);
+
+            animate();
+        }
+        
+        function startUserInteraction() {
+            // Setup MediaPipe Hand Tracking (Camera & Model)
+            setupMediaPipe();
+            startHandTracking(); // This handles camera stream acquisition and assignment
+            
+            // Setup Voice Command
+            initVoiceCommand();
+            startRecognition();
+            
+            // Add new listener for subsequent manual clicks to morph
+            window.addEventListener('click', startMorphTransition);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function startMorphTransition() {
+            // Check for unauthorized clicks before full setup
+            if (!video || !video.srcObject) return;
+
+            if (isMorphing) return;
+
+            isMorphing = true;
+            morphStartTime = clock.getElapsedTime();
+            currentState = targetState;
+            targetState = (targetState + 1) % geometryNames.length; // Cycle through all states
+
+            // If the target is 'UNIVERSE BOOM', dynamically generate explosion positions
+            if (geometryNames[targetState] === 'UNIVERSE BOOM') {
+                // Store the current positions as the explosion origin
+                targetPositions[currentState] = particles.geometry.attributes.position.array.slice();
+                // Generate new explosion positions based on the current state
+                targetPositions[targetState] = createExplosionPositions(); 
+                // Adjust morph duration for explosion
+                morphStartTime = clock.getElapsedTime(); // Reset morph start time
+            } else if (geometryNames[currentState] === 'UNIVERSE BOOM') {
+                // If coming from explosion, re-calculate the next static shape (Saturn, Torus, Icosahedron)
+                switch(geometryNames[targetState]) {
+                    case 'SATURN': targetPositions[targetState] = createSaturnPositions(); break;
+                    case 'TORUS': targetPositions[targetState] = createTorusPositions(4.5, 1.5); break;
+                    case 'ICOSAHEDRON': targetPositions[targetState] = createIcosahedronPositions(5.0); break;
+                }
+            }
+
+
+            infoElement.textContent = geometryNames[targetState];
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Smoothly adjust camera position based on hand gesture (targetZoomZ)
+            camera.position.z = THREE.MathUtils.lerp(camera.position.z, targetZoomZ, 0.1);
+            
+            controls.update();
+
+            const deltaTime = clock.getDelta();
+            
+            // 始终让背景星空旋转，创造粒子飞舞的效果
+            if (stars) {
+                // 使用比主粒子慢的速度旋转，创造景深和运动感
+                stars.rotation.y += BASE_ROTATION_Y * 0.2; 
+                stars.rotation.x += BASE_ROTATION_X * 0.5;
+            }
+
+            if (isMorphing) {
+                const elapsed = clock.getElapsedTime() - morphStartTime;
+                let alpha;
+
+                if (geometryNames[targetState] === 'UNIVERSE BOOM' || geometryNames[currentState] === 'UNIVERSE BOOM') {
+                    alpha = elapsed / EXPLOSION_DURATION; // Use explosion duration for explosion state
+                } else {
+                    alpha = elapsed / MORPH_DURATION;
+                }
+                
+                if (alpha >= 1) {
+                    alpha = 1;
+                    isMorphing = false;
+                }
+
+                const easedAlpha = (1 - Math.cos(alpha * Math.PI)) / 2;
+
+                const startPos = targetPositions[currentState];
+                const endPos = targetPositions[targetState];
+                const currentPos = particles.geometry.attributes.position.array;
+
+                for (let i = 0; i < PARTICLE_COUNT * 3; i++) {
+                    currentPos[i] = THREE.MathUtils.lerp(startPos[i], endPos[i], easedAlpha);
+                }
+
+                particles.geometry.attributes.position.needsUpdate = true;
+            } else {
+                // Apply base rotation to static shapes 
+                if (geometryNames[targetState] !== 'UNIVERSE BOOM') {
+                    particles.rotation.y += BASE_ROTATION_Y;
+                    particles.rotation.x += BASE_ROTATION_X;
+                }
+            }
+
+            composer.render(deltaTime);
+        }
+
+        window.onload = function () {
+            init();
+        };
+
+    </script>
+</body>
+</html>
